@@ -1,0 +1,65 @@
+#!/usr/bin/with-contenv bashio
+set -euo pipefail
+
+CONFIG_DIR="/addon_configs/${HOSTNAME}"
+mkdir -p "$CONFIG_DIR"
+CONFIG_FILE="$CONFIG_DIR/config.ini"
+BINARY_DIR="/usr/local/bin"
+
+map_arch() {
+    local machine
+    machine="$(uname -m)"
+    case "$machine" in
+        x86_64) echo "vhusbdx86_64" ;;
+        i386|i486|i586|i686) echo "vhusbdi386" ;;
+        aarch64|arm64) echo "vhusbdarm64" ;;
+        armv7l|armv7*) echo "vhusbdarm" ;;
+        armv6l|armhf|arm*) echo "vhusbdarm" ;;
+        *)
+            bashio::log.fatal "Unsupported architecture: $machine"
+            exit 1
+            ;;
+    esac
+}
+
+write_config() {
+    local raw
+    raw="$(bashio::config 'config_ini' || true)"
+    if [ -n "$raw" ]; then
+        printf '%s\n' "$raw" > "$CONFIG_FILE"
+        bashio::log.info "Wrote config.ini from app options to $CONFIG_FILE"
+    elif [ ! -f "$CONFIG_FILE" ]; then
+        : > "$CONFIG_FILE"
+        bashio::log.info "Created empty config.ini at $CONFIG_FILE"
+    else
+        bashio::log.info "Using existing config.ini at $CONFIG_FILE"
+    fi
+}
+
+download_binary() {
+    local filename url target
+    filename="$(map_arch)"
+    url="https://www.virtualhere.com/sites/default/files/usbserver/${filename}"
+    target="${BINARY_DIR}/${filename}"
+
+    if [ ! -x "$target" ]; then
+        bashio::log.info "Downloading VirtualHere server binary: ${filename}"
+        curl -fsSL "$url" -o "$target"
+        chmod 0755 "$target"
+    else
+        bashio::log.info "Using cached VirtualHere server binary: ${filename}"
+    fi
+
+    printf '%s\n' "$target"
+}
+
+main() {
+    local bin
+    write_config
+    bin="$(download_binary)"
+
+    bashio::log.info "Starting VirtualHere USB Server"
+    exec "$bin" -c "$CONFIG_FILE"
+}
+
+main "$@"
