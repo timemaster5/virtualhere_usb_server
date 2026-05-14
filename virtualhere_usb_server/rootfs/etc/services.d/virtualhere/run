@@ -119,33 +119,21 @@ reset_usb_device() {
         return 0
     fi
 
-    bashio::log.info "Resetting USB device via usbreset tool (path: ${path})"
+    bashio::log.info "Resetting USB device ${path}"
 
-    # Pokud jsou dostupné vendor a product ID, usbreset je umí využít napřímo a spolehlivěji
-    if [ -n "$vendor" ] && [ -n "$product" ]; then
-        if ! usbreset "${vendor}:${product}"; then
-            bashio::log.warning "Failed to reset USB device using IDs ${vendor}:${product}"
-            return 0
-        fi
-    else
-        # Alternativní reset pomocí cesty (např. přes sysfs název mapovaný do /dev/bus/usb/)
-        # Nástroj usbreset umí pracovat i s cestou k zařízení, pokud ji dokáže dohledat
-        if ! usbreset "/dev/bus/usb/$(cat /sys/bus/usb/devices/${path}/busnum | xargs printf '%03d')/$(cat /sys/bus/usb/devices/${path}/devnum | xargs printf '%03d')" 2>/dev/null; then
-            bashio::log.warning "Failed to reset USB device using dev path, attempting fallback via ID lookups..."
-            
-            local final_vendor
-            local final_product
-            final_vendor="$(cat "/sys/bus/usb/devices/${path}/idVendor")"
-            final_product="$(cat "/sys/bus/usb/devices/${path}/idProduct")"
-            
-            if ! usbreset "${final_vendor}:${final_product}"; then
-                bashio::log.warning "Fallback USB reset failed for ${path}"
-                return 0
-            fi
-        fi
+    if ! printf '%s\n' "$path" | tee /sys/bus/usb/drivers/usb/unbind >/dev/null; then
+        bashio::log.warning "Failed to unbind USB device ${path}"
+        return 0
     fi
 
-    bashio::log.info "USB reset completed successfully for ${path}"
+    sleep 2
+
+    if ! printf '%s\n' "$path" | tee /sys/bus/usb/drivers/usb/bind >/dev/null; then
+        bashio::log.warning "Failed to bind USB device ${path}"
+        return 0
+    fi
+
+    bashio::log.info "USB reset completed for ${path}"
 }
 
 reset_usb_devices() {

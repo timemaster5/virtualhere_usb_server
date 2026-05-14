@@ -1,7 +1,7 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
-RUN apk add --no-cache bash curl ca-certificates usbutils
+RUN apk add --no-cache bash curl ca-certificates
 
 COPY rootfs /
 
