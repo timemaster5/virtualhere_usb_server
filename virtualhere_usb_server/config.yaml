@@ -7,9 +7,6 @@ url: "virtualhere.com"
 arch:
   - aarch64
   - amd64
-  - armhf
-  - armv7
-  - i386
 
 startup: services
 boot: auto
@@ -17,6 +14,7 @@ init: false
 
 apparmor: true
 full_access: false
+privileged: []
 
 host_network: true
 usb: true
