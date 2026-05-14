@@ -121,14 +121,14 @@ reset_usb_device() {
 
     bashio::log.info "Resetting USB device ${path}"
 
-    if ! printf '%s\n' "$path" > /sys/bus/usb/drivers/usb/unbind; then
+    if ! printf '%s\n' "$path" | tee /sys/bus/usb/drivers/usb/unbind >/dev/null; then
         bashio::log.warning "Failed to unbind USB device ${path}"
         return 0
     fi
 
-    sleep 5
+    sleep 2
 
-    if ! printf '%s\n' "$path" > /sys/bus/usb/drivers/usb/bind; then
+    if ! printf '%s\n' "$path" | tee /sys/bus/usb/drivers/usb/bind >/dev/null; then
         bashio::log.warning "Failed to bind USB device ${path}"
         return 0
     fi
