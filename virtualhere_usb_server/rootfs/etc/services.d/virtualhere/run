@@ -6,9 +6,12 @@ mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.ini"
 BINARY_DIR="/usr/local/bin"
 
+VH_PID=""
+
 map_arch() {
     local machine
     machine="$(uname -m)"
+
     case "$machine" in
         x86_64) echo "vhusbdx86_64" ;;
         i386|i486|i586|i686) echo "vhusbdi386" ;;
@@ -25,6 +28,7 @@ map_arch() {
 write_config() {
     local raw
     raw="$(bashio::config 'config_ini' || true)"
+
     if [ -n "$raw" ]; then
         printf '%s\n' "$raw" > "$CONFIG_FILE"
         bashio::log.info "Wrote config.ini from app options to $CONFIG_FILE"
@@ -53,13 +57,153 @@ download_binary() {
     printf '%s\n' "$target"
 }
 
+usb_device_matches() {
+    local path="$1"
+    local vendor="$2"
+    local product="$3"
+    local sysfs_path="/sys/bus/usb/devices/${path}"
+    local actual_vendor=""
+    local actual_product=""
+
+    if [ ! -d "$sysfs_path" ]; then
+        bashio::log.warning "USB device path not found: ${sysfs_path}"
+        return 1
+    fi
+
+    if [ -n "$vendor" ]; then
+        if [ ! -f "${sysfs_path}/idVendor" ]; then
+            bashio::log.warning "USB device ${path} has no idVendor file"
+            return 1
+        fi
+
+        actual_vendor="$(cat "${sysfs_path}/idVendor")"
+
+        if [ "$actual_vendor" != "$vendor" ]; then
+            bashio::log.warning "USB device ${path} vendor mismatch: expected ${vendor}, got ${actual_vendor}"
+            return 1
+        fi
+    fi
+
+    if [ -n "$product" ]; then
+        if [ ! -f "${sysfs_path}/idProduct" ]; then
+            bashio::log.warning "USB device ${path} has no idProduct file"
+            return 1
+        fi
+
+        actual_product="$(cat "${sysfs_path}/idProduct")"
+
+        if [ "$actual_product" != "$product" ]; then
+            bashio::log.warning "USB device ${path} product mismatch: expected ${product}, got ${actual_product}"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+reset_usb_device() {
+    local path="$1"
+    local vendor="$2"
+    local product="$3"
+
+    if [ -z "$path" ]; then
+        bashio::log.warning "Skipping USB reset entry with empty path"
+        return 0
+    fi
+
+    if ! usb_device_matches "$path" "$vendor" "$product"; then
+        bashio::log.warning "Skipping USB reset for ${path}"
+        return 0
+    fi
+
+    bashio::log.info "Resetting USB device ${path}"
+
+    if ! printf '%s\n' "$path" > /sys/bus/usb/drivers/usb/unbind; then
+        bashio::log.warning "Failed to unbind USB device ${path}"
+        return 0
+    fi
+
+    sleep 5
+
+    if ! printf '%s\n' "$path" > /sys/bus/usb/drivers/usb/bind; then
+        bashio::log.warning "Failed to bind USB device ${path}"
+        return 0
+    fi
+
+    bashio::log.info "USB reset completed for ${path}"
+}
+
+reset_usb_devices() {
+    local phase="$1"
+    local count
+    local index
+    local path
+    local vendor
+    local product
+    local reset_on_start
+    local reset_on_stop
+
+    count="$(bashio::config 'usb_reset_devices | length' 2>/dev/null || echo 0)"
+
+    if [ "$count" = "null" ] || [ "$count" -eq 0 ]; then
+        bashio::log.info "No USB reset devices configured"
+        return 0
+    fi
+
+    for index in $(seq 0 $((count - 1))); do
+        path="$(bashio::config "usb_reset_devices[${index}].path" || true)"
+        vendor="$(bashio::config "usb_reset_devices[${index}].vendor" || true)"
+        product="$(bashio::config "usb_reset_devices[${index}].product" || true)"
+        reset_on_start="$(bashio::config "usb_reset_devices[${index}].reset_on_start" || echo false)"
+        reset_on_stop="$(bashio::config "usb_reset_devices[${index}].reset_on_stop" || echo false)"
+
+        case "$phase" in
+            start)
+                if [ "$reset_on_start" = "true" ]; then
+                    reset_usb_device "$path" "$vendor" "$product"
+                fi
+                ;;
+            stop)
+                if [ "$reset_on_stop" = "true" ]; then
+                    reset_usb_device "$path" "$vendor" "$product"
+                fi
+                ;;
+        esac
+    done
+}
+
+shutdown() {
+    bashio::log.info "Stopping VirtualHere USB Server"
+
+    trap - SIGTERM SIGINT EXIT
+
+    if [ -n "${VH_PID}" ]; then
+        kill "$VH_PID" 2>/dev/null || true
+        wait "$VH_PID" 2>/dev/null || true
+    fi
+
+    reset_usb_devices stop
+
+    bashio::log.info "VirtualHere USB Server stopped"
+    exit 0
+}
+
 main() {
     local bin
+
+    trap shutdown SIGTERM SIGINT EXIT
+
     write_config
     bin="$(download_binary)"
 
+    reset_usb_devices start
+
     bashio::log.info "Starting VirtualHere USB Server"
-    exec "$bin" -c "$CONFIG_FILE"
+
+    "$bin" -c "$CONFIG_FILE" &
+    VH_PID="$!"
+
+    wait "$VH_PID"
 }
 
 main "$@"
