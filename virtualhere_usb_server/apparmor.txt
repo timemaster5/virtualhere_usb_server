@@ -1,0 +1,113 @@
+#include <tunables/global>
+
+profile virtualhere_usb_server flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # Capabilities
+  capability sys_admin,
+  capability sys_rawio,
+  capability net_bind_service,
+  capability net_admin,
+  capability dac_override,
+  capability dac_read_search,
+  capability setuid,
+  capability setgid,
+  capability chown,
+  capability fowner,
+  capability fsetid,
+
+  # /init entrypoint (symlink — cover both the link and its target)
+  /init                          rix,
+
+  # s6-overlay — binaries live under /package, staged into /run at boot
+  /package/                      r,
+  /package/**                    rix,
+
+  # /run needs full rwix — s6 stages its own executables here during init
+  /run/                          rw,
+  /run/{,**} rwdlk,
+  /run/**/                       rwdl,
+  /run/**/.s6-svscan/            rwdl,
+  /run/**/.s6-svscan/**          rwdlk,
+
+  # s6 config and service definitions
+  /etc/s6-overlay/**             r,
+  /etc/services.d/**             rix,
+  /etc/cont-init.d/**            rix,
+  /etc/cont-finish.d/**          rix,
+
+  # Shells and core utils
+  /bin/sh                        rix,
+  /bin/bash                      rix,
+  /bin/busybox                   rix,
+  /bin/**                        rix,
+  /usr/bin/**                    rix,
+  /usr/local/bin/**              rix,
+  /command/**                    rix,
+
+  # bashio library
+  /usr/share/bashio/**           r,
+
+  # Libs
+  /lib/**                        mr,
+  /lib64/**                      mr,
+  /usr/lib/**                    mr,
+
+  # curl TLS (for downloading VH binary at startup)
+  /etc/ssl/**                    r,
+  /etc/ca-certificates/**        r,
+  /usr/share/ca-certificates/**  r,
+
+  # VirtualHere binary (written by curl, then executed)
+  /usr/local/bin/vhusbd*         rwix,
+
+  # Addon config storage
+  /addon_configs/**              rw,
+  /data/**                       rw,
+
+  # sysfs — USB bind/unbind
+  /sys/                          r,
+  /sys/**                        rw,
+
+  # USB devices and udev
+  /dev/                          r,
+  /dev/**                        rw,
+  /run/udev/**                   r,
+
+  # proc
+  /proc/                         r,
+  /proc/**                       r,
+
+  # tmp
+  /tmp/                          rw,
+  /tmp/**                        rw,
+
+  # System identity and name resolution
+  /etc/hostname                  r,
+  /etc/hosts                     r,
+  /etc/resolv.conf               r,
+  /etc/passwd                    r,
+  /etc/group                     r,
+
+  # HA supervisor socket
+  /run/supervisor/**             rw,
+
+  # s6 lock files — hidden dirs need explicit coverage
+  /run/**/                       rw,
+  /run/**/.s6-svscan/            rw,
+  /run/**/.s6-svscan/**          rw,
+
+  # Broad read fallback — covers symlink targets and any script sh opens
+  # Safe to tighten once running: check journalctl -k | grep DENIED | grep virtualhere
+  /**                            r,
+
+  # Networking
+  network tcp,
+  network udp,
+  network raw,
+
+  # Hardening denies
+  deny /proc/sys/kernel/modprobe rw,
+  deny /proc/sysrq-trigger       rw,
+}
