@@ -1,3 +1,3 @@
-name: VirtualHere Local Apps
-url: "https://example.local/virtualhere-local-apps"
-maintainer: OpenAI for Michal Altmann
+name: VirtualHere Custom AddOn
+url: "https://github.com/timemaster5/virtualhere_usb_server"
+maintainer: AI for Michal Altmann
