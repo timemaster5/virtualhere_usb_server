@@ -1,5 +1,5 @@
 name: VirtualHere USB Server
-version: "0.3.1"
+version: "0.3.2"
 slug: virtualhere_usb_server
 description: Share USB devices over the network using the VirtualHere Linux server.
 url: "https://www.virtualhere.com/usb_server_software"
