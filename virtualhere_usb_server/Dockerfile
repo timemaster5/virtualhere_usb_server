@@ -1,6 +1,9 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 
+ENV S6_SERVICES_GRACETIME=60000 \
+    S6_KILL_GRACETIME=60000
+
 RUN apk add --no-cache bash curl ca-certificates libusb \
     && apk add --no-cache --virtual .build-deps gcc musl-dev linux-headers make git pkgconf libusb-dev
 
