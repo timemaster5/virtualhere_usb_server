@@ -5,6 +5,7 @@ CONFIG_DIR="/addon_configs/${HOSTNAME}"
 mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.ini"
 BINARY_DIR="/usr/local/bin"
+USB_RESET_BIN="/usr/local/bin/usb-reset"
 
 VH_PID=""
 SHUTTING_DOWN="false"
@@ -24,6 +25,36 @@ map_arch() {
             exit 1
             ;;
     esac
+}
+
+config_value() {
+    local key="$1"
+    local value
+
+    value="$(bashio::config "$key" 2>/dev/null || true)"
+
+    if [ "$value" = "null" ]; then
+        value=""
+    fi
+
+    printf '%s' "$value"
+}
+
+config_bool() {
+    local key="$1"
+    local value
+
+    value="$(config_value "$key")"
+
+    if [ "$value" = "true" ]; then
+        printf 'true'
+    else
+        printf 'false'
+    fi
+}
+
+normalize_usb_id() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 write_config() {
@@ -66,18 +97,21 @@ usb_device_matches() {
     local actual_vendor=""
     local actual_product=""
 
+    vendor="$(normalize_usb_id "$vendor")"
+    product="$(normalize_usb_id "$product")"
+
     if [ ! -d "$sysfs_path" ]; then
         bashio::log.warning "USB device path not found: ${sysfs_path}"
         return 1
     fi
 
     if [ -n "$vendor" ]; then
-        if [ ! -f "${sysfs_path}/idVendor" ]; then
-            bashio::log.warning "USB device ${path} has no idVendor file"
+        if [ ! -r "${sysfs_path}/idVendor" ]; then
+            bashio::log.warning "USB device ${path} has no readable idVendor file"
             return 1
         fi
 
-        actual_vendor="$(cat "${sysfs_path}/idVendor")"
+        actual_vendor="$(normalize_usb_id "$(cat "${sysfs_path}/idVendor")")"
 
         if [ "$actual_vendor" != "$vendor" ]; then
             bashio::log.warning "USB device ${path} vendor mismatch: expected ${vendor}, got ${actual_vendor}"
@@ -86,12 +120,12 @@ usb_device_matches() {
     fi
 
     if [ -n "$product" ]; then
-        if [ ! -f "${sysfs_path}/idProduct" ]; then
-            bashio::log.warning "USB device ${path} has no idProduct file"
+        if [ ! -r "${sysfs_path}/idProduct" ]; then
+            bashio::log.warning "USB device ${path} has no readable idProduct file"
             return 1
         fi
 
-        actual_product="$(cat "${sysfs_path}/idProduct")"
+        actual_product="$(normalize_usb_id "$(cat "${sysfs_path}/idProduct")")"
 
         if [ "$actual_product" != "$product" ]; then
             bashio::log.warning "USB device ${path} product mismatch: expected ${product}, got ${actual_product}"
@@ -102,10 +136,28 @@ usb_device_matches() {
     return 0
 }
 
+usb_busdev_node() {
+    local path="$1"
+    local sysfs_path="/sys/bus/usb/devices/${path}"
+    local busnum
+    local devnum
+
+    if [ ! -r "${sysfs_path}/busnum" ] || [ ! -r "${sysfs_path}/devnum" ]; then
+        bashio::log.warning "USB device ${path} has no readable busnum/devnum files"
+        return 1
+    fi
+
+    busnum="$(cat "${sysfs_path}/busnum")"
+    devnum="$(cat "${sysfs_path}/devnum")"
+
+    printf '/dev/bus/usb/%03d/%03d\n' "$((10#$busnum))" "$((10#$devnum))"
+}
+
 reset_usb_device() {
     local path="$1"
     local vendor="$2"
     local product="$3"
+    local node
 
     if [ -z "$path" ]; then
         bashio::log.warning "Skipping USB reset entry with empty path"
@@ -119,20 +171,24 @@ reset_usb_device() {
         return 0
     fi
 
-    bashio::log.info "Resetting USB device ${path}"
+    if ! node="$(usb_busdev_node "$path")"; then
+        bashio::log.warning "Skipping USB reset for ${path}: could not resolve /dev/bus/usb node"
+        return 0
+    fi
 
-    if ! printf '%s\n' "$path" | tee /sys/bus/usb/drivers/usb/unbind >/dev/null; then
-        bashio::log.warning "Failed to unbind USB device ${path}"
+    if [ ! -e "$node" ]; then
+        bashio::log.warning "Skipping USB reset for ${path}: ${node} does not exist"
+        return 0
+    fi
+
+    bashio::log.info "Resetting USB device ${path} via ${node}"
+
+    if ! "$USB_RESET_BIN" "$node"; then
+        bashio::log.warning "Failed to reset USB device ${path} via ${node}"
         return 0
     fi
 
     sleep 2
-
-    if ! printf '%s\n' "$path" | tee /sys/bus/usb/drivers/usb/bind >/dev/null; then
-        bashio::log.warning "Failed to bind USB device ${path}"
-        return 0
-    fi
-
     bashio::log.info "USB reset completed for ${path}"
 }
 
@@ -156,11 +212,11 @@ reset_usb_devices() {
     bashio::log.info "Checking USB reset devices for ${phase}"
 
     for index in $(seq 0 $((count - 1))); do
-        path="$(bashio::config "usb_reset_devices[${index}].path" || true)"
-        vendor="$(bashio::config "usb_reset_devices[${index}].vendor" || true)"
-        product="$(bashio::config "usb_reset_devices[${index}].product" || true)"
-        reset_on_start="$(bashio::config "usb_reset_devices[${index}].reset_on_start" || echo false)"
-        reset_on_stop="$(bashio::config "usb_reset_devices[${index}].reset_on_stop" || echo false)"
+        path="$(config_value "usb_reset_devices[${index}].path")"
+        vendor="$(config_value "usb_reset_devices[${index}].vendor")"
+        product="$(config_value "usb_reset_devices[${index}].product")"
+        reset_on_start="$(config_bool "usb_reset_devices[${index}].reset_on_start")"
+        reset_on_stop="$(config_bool "usb_reset_devices[${index}].reset_on_stop")"
 
         case "$phase" in
             start)
