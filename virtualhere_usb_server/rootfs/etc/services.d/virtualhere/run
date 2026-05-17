@@ -6,6 +6,7 @@ mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.ini"
 BINARY_DIR="/usr/local/bin"
 USB_RESET_BIN="/usr/local/bin/usb-reset"
+UHUBCTL_BIN="/usr/local/bin/uhubctl"
 
 VH_PID=""
 SHUTTING_DOWN="false"
@@ -153,6 +154,27 @@ usb_busdev_node() {
     printf '/dev/bus/usb/%03d/%03d\n' "$((10#$busnum))" "$((10#$devnum))"
 }
 
+usb_hub_port_from_path() {
+    local path="$1"
+    local hub
+    local port
+
+    if [ -z "$path" ] || [ "$path" = "${path%.*}" ]; then
+        bashio::log.warning "USB path ${path} does not include a downstream hub port"
+        return 1
+    fi
+
+    hub="${path%.*}"
+    port="${path##*.}"
+
+    if [ -z "$hub" ] || [ -z "$port" ] || [ "$hub" = "$path" ]; then
+        bashio::log.warning "Could not derive parent hub and port from USB path ${path}"
+        return 1
+    fi
+
+    printf '%s %s\n' "$hub" "$port"
+}
+
 reset_usb_device() {
     local path="$1"
     local vendor="$2"
@@ -192,6 +214,52 @@ reset_usb_device() {
     bashio::log.info "USB reset completed for ${path}"
 }
 
+powercycle_usb_port() {
+    local path="$1"
+    local vendor="$2"
+    local product="$3"
+    local delay="$4"
+    local hub_port
+    local hub
+    local port
+
+    if [ -z "$path" ]; then
+        bashio::log.warning "Skipping USB port power cycle entry with empty path"
+        return 0
+    fi
+
+    if [ -z "$delay" ]; then
+        delay="5"
+    fi
+
+    if ! usb_device_matches "$path" "$vendor" "$product"; then
+        bashio::log.warning "Skipping USB port power cycle for ${path}"
+        return 0
+    fi
+
+    if ! command -v "$UHUBCTL_BIN" >/dev/null 2>&1; then
+        bashio::log.warning "Skipping USB port power cycle for ${path}: uhubctl is not installed"
+        return 0
+    fi
+
+    if ! hub_port="$(usb_hub_port_from_path "$path")"; then
+        bashio::log.warning "Skipping USB port power cycle for ${path}: could not derive parent hub and port"
+        return 0
+    fi
+
+    hub="${hub_port% *}"
+    port="${hub_port##* }"
+
+    bashio::log.info "Power cycling USB port ${port} on hub ${hub} for device ${path}"
+
+    if ! "$UHUBCTL_BIN" -l "$hub" -p "$port" -a cycle -d "$delay"; then
+        bashio::log.warning "Failed to power cycle USB port ${port} on hub ${hub} for device ${path}"
+        return 0
+    fi
+
+    bashio::log.info "USB port power cycle completed for ${path}"
+}
+
 reset_usb_devices() {
     local phase="$1"
     local count
@@ -201,6 +269,8 @@ reset_usb_devices() {
     local product
     local reset_on_start
     local reset_on_stop
+    local powercycle_on_stop
+    local powercycle_delay
 
     count="$(bashio::config 'usb_reset_devices | length' 2>/dev/null || echo 0)"
 
@@ -217,6 +287,8 @@ reset_usb_devices() {
         product="$(config_value "usb_reset_devices[${index}].product")"
         reset_on_start="$(config_bool "usb_reset_devices[${index}].reset_on_start")"
         reset_on_stop="$(config_bool "usb_reset_devices[${index}].reset_on_stop")"
+        powercycle_on_stop="$(config_bool "usb_reset_devices[${index}].powercycle_on_stop")"
+        powercycle_delay="$(config_value "usb_reset_devices[${index}].powercycle_delay")"
 
         case "$phase" in
             start)
@@ -232,9 +304,35 @@ reset_usb_devices() {
                 else
                     bashio::log.info "USB reset on stop disabled for ${path}"
                 fi
+
+                if [ "$powercycle_on_stop" = "true" ]; then
+                    powercycle_usb_port "$path" "$vendor" "$product" "$powercycle_delay"
+                else
+                    bashio::log.info "USB port power cycle on stop disabled for ${path}"
+                fi
                 ;;
         esac
     done
+}
+
+wait_for_virtualhere_stop() {
+    local waited=0
+
+    if [ -z "$VH_PID" ] || ! kill -0 "$VH_PID" 2>/dev/null; then
+        return 0
+    fi
+
+    while kill -0 "$VH_PID" 2>/dev/null && [ "$waited" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if kill -0 "$VH_PID" 2>/dev/null; then
+        bashio::log.warning "VirtualHere did not stop within 10 seconds, sending KILL"
+        kill -KILL "$VH_PID" 2>/dev/null || true
+    fi
+
+    wait "$VH_PID" 2>/dev/null || true
 }
 
 shutdown() {
@@ -249,26 +347,11 @@ shutdown() {
     if [ -n "$VH_PID" ] && kill -0 "$VH_PID" 2>/dev/null; then
         bashio::log.info "Sending TERM to VirtualHere USB Server"
         kill -TERM "$VH_PID" 2>/dev/null || true
+        wait_for_virtualhere_stop
     fi
 
-    bashio::log.info "Running USB reset after VirtualHere stop signal"
+    bashio::log.info "Running USB reset actions after VirtualHere stopped"
     reset_usb_devices stop
-
-    if [ -n "$VH_PID" ] && kill -0 "$VH_PID" 2>/dev/null; then
-        local waited=0
-
-        while kill -0 "$VH_PID" 2>/dev/null && [ "$waited" -lt 10 ]; do
-            sleep 1
-            waited=$((waited + 1))
-        done
-
-        if kill -0 "$VH_PID" 2>/dev/null; then
-            bashio::log.warning "VirtualHere did not stop within 10 seconds, sending KILL"
-            kill -KILL "$VH_PID" 2>/dev/null || true
-        fi
-
-        wait "$VH_PID" 2>/dev/null || true
-    fi
 
     bashio::log.info "VirtualHere USB Server stopped"
     exit 0
