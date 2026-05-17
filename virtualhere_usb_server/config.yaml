@@ -1,5 +1,5 @@
 name: VirtualHere USB Server
-version: "0.3.5"
+version: "0.3.6"
 slug: virtualhere_usb_server
 description: Share USB devices over the network using the VirtualHere Linux server.
 url: "https://www.virtualhere.com/usb_server_software"
@@ -11,6 +11,7 @@ arch:
 startup: services
 boot: auto
 init: false
+timeout: 60
 
 apparmor: true
 host_sysfs: true
