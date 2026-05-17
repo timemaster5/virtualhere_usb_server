@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.6
+
+- Extended the Home Assistant add-on shutdown timeout to give stop-time USB reset and port power-cycle actions time to complete.
+- Increased s6 service shutdown grace periods so the service script is not killed before cleanup actions run.
+
 ## 0.3.5
 
 - Added USB port power cycling on add-on stop using bundled `uhubctl`.
