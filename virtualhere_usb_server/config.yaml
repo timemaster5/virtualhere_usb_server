@@ -1,5 +1,5 @@
 name: VirtualHere USB Server
-version: "0.3.0"
+version: "0.3.5"
 slug: virtualhere_usb_server
 description: Share USB devices over the network using the VirtualHere Linux server.
 url: "https://www.virtualhere.com/usb_server_software"
@@ -33,6 +33,8 @@ options:
       product: "0008"
       reset_on_start: false
       reset_on_stop: true
+      powercycle_on_stop: true
+      powercycle_delay: 5
 
 schema:
   config_ini: "str?"
@@ -42,3 +44,5 @@ schema:
       product: "str?"
       reset_on_start: "bool?"
       reset_on_stop: "bool?"
+      powercycle_on_stop: "bool?"
+      powercycle_delay: "int?"
