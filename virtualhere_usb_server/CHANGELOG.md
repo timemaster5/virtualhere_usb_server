@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.7
+
+- Improved the bundled `usb-reset` helper to try a stronger USB cleanup sequence: `USBDEVFS_DISCONNECT`, `USBDEVFS_RESET`, then `USBDEVFS_CONNECT`.
+- Keeps the plain USB reset path as a fallback when disconnecting the device from kernel drivers is not supported.
+- No configuration changes are required; existing `reset_on_start` and `reset_on_stop` options use the improved helper automatically.
+
 ## 0.3.6
 
 - Extended the Home Assistant add-on shutdown timeout to give stop-time USB reset and port power-cycle actions time to complete.
