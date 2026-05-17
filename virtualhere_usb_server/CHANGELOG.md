@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5
+
+- Added USB port power cycling on add-on stop using bundled `uhubctl`.
+- Added `powercycle_on_stop` and `powercycle_delay` options to each `usb_reset_devices` entry.
+- Enabled port power cycling by default for the Jablotron JA-100 Flexi target, using vendor `16d6`, product `0008`, and path `1-1.2`.
+- Updated shutdown handling so VirtualHere is stopped before running USB reset and power-cycle actions.
+- Kept the existing configurable USB reset behavior for multiple devices on add-on start and/or stop.
+
 ## 0.3.0
 
 - Added a bundled `usb-reset` helper that resets configured USB devices through the Linux `USBDEVFS_RESET` ioctl on `/dev/bus/usb`.
