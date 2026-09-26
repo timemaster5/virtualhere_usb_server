@@ -137,6 +137,59 @@ usb_device_matches() {
     return 0
 }
 
+# Prints the sysfs path of the device: the configured one if it matches, otherwise the only
+# device with the configured vendor and product.
+resolve_usb_path() {
+    local path="$1"
+    local vendor="$2"
+    local product="$3"
+    local dir
+    local found=()
+
+    if [ -n "$path" ] && [ -d "/sys/bus/usb/devices/${path}" ] && usb_device_matches "$path" "$vendor" "$product"; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    if [ -z "$vendor" ] || [ -z "$product" ]; then
+        bashio::log.warning "USB device ${path:-(no path)} not found, and no vendor/product to search by"
+        return 1
+    fi
+
+    vendor="$(normalize_usb_id "$vendor")"
+    product="$(normalize_usb_id "$product")"
+
+    for dir in /sys/bus/usb/devices/*; do
+        case "${dir##*/}" in *:*) continue ;; esac
+        [ -r "${dir}/idVendor" ] && [ -r "${dir}/idProduct" ] || continue
+        if [ "$(normalize_usb_id "$(cat "${dir}/idVendor")")" = "$vendor" ] \
+            && [ "$(normalize_usb_id "$(cat "${dir}/idProduct")")" = "$product" ]; then
+            found+=("${dir##*/}")
+        fi
+    done
+
+    if [ "${#found[@]}" -ne 1 ]; then
+        bashio::log.warning "Found ${#found[@]} USB devices ${vendor}:${product}; need exactly one"
+        return 1
+    fi
+
+    if [ -n "$path" ]; then
+        bashio::log.info "USB device ${vendor}:${product} is at ${found[0]}, not the configured ${path}"
+    fi
+    printf '%s\n' "${found[0]}"
+}
+
+# Lists the device's interfaces that have no kernel driver bound.
+unbound_interfaces() {
+    local path="$1"
+    local intf
+
+    for intf in "/sys/bus/usb/devices/${path}:"*; do
+        [ -d "$intf" ] || continue
+        [ -e "${intf}/driver" ] || printf '%s\n' "${intf##*/}"
+    done
+}
+
 usb_busdev_node() {
     local path="$1"
     local sysfs_path="/sys/bus/usb/devices/${path}"
@@ -176,42 +229,48 @@ usb_hub_port_from_path() {
 }
 
 reset_usb_device() {
-    local path="$1"
-    local vendor="$2"
-    local product="$3"
+    local phase="$1"
+    local path="$2"
+    local vendor="$3"
+    local product="$4"
     local node
+    local unbound
 
-    if [ -z "$path" ]; then
-        bashio::log.warning "Skipping USB reset entry with empty path"
+    if ! path="$(resolve_usb_path "$path" "$vendor" "$product")"; then
+        bashio::log.warning "Skipping USB ${phase} action: device not found"
         return 0
     fi
 
-    bashio::log.info "Preparing USB reset for ${path}"
-
-    if ! usb_device_matches "$path" "$vendor" "$product"; then
-        bashio::log.warning "Skipping USB reset for ${path}"
+    if ! node="$(usb_busdev_node "$path")" || [ ! -e "$node" ]; then
+        bashio::log.warning "Skipping USB ${phase} action for ${path}: no /dev/bus/usb node"
         return 0
     fi
 
-    if ! node="$(usb_busdev_node "$path")"; then
-        bashio::log.warning "Skipping USB reset for ${path}: could not resolve /dev/bus/usb node"
-        return 0
-    fi
-
-    if [ ! -e "$node" ]; then
-        bashio::log.warning "Skipping USB reset for ${path}: ${node} does not exist"
-        return 0
+    if [ "$phase" = "stop" ]; then
+        # VirtualHere detaches the kernel drivers; give the interfaces back to them.
+        bashio::log.info "Attaching kernel drivers to ${path} via ${node}"
+        "$USB_RESET_BIN" --connect "$node" || true
+        sleep 1
+        unbound="$(unbound_interfaces "$path")"
+        if [ -z "$unbound" ]; then
+            bashio::log.info "USB device ${path} is back with its kernel drivers"
+            return 0
+        fi
+        bashio::log.warning "Still without a driver: $(echo $unbound); resetting ${path}"
     fi
 
     bashio::log.info "Resetting USB device ${path} via ${node}"
-
-    if ! "$USB_RESET_BIN" "$node"; then
-        bashio::log.warning "Failed to reset USB device ${path} via ${node}"
-        return 0
+    if ! "$USB_RESET_BIN" --reset "$node"; then
+        bashio::log.warning "USB reset of ${path} reported errors"
     fi
-
     sleep 2
-    bashio::log.info "USB reset completed for ${path}"
+
+    unbound="$(unbound_interfaces "$path")"
+    if [ -n "$unbound" ]; then
+        bashio::log.warning "USB device ${path} still has interfaces without a driver: $(echo $unbound)"
+    else
+        bashio::log.info "USB reset completed for ${path}"
+    fi
 }
 
 powercycle_usb_port() {
@@ -232,8 +291,8 @@ powercycle_usb_port() {
         delay="5"
     fi
 
-    if ! usb_device_matches "$path" "$vendor" "$product"; then
-        bashio::log.warning "Skipping USB port power cycle for ${path}"
+    if ! path="$(resolve_usb_path "$path" "$vendor" "$product")"; then
+        bashio::log.warning "Skipping USB port power cycle: device not found"
         return 0
     fi
 
@@ -293,14 +352,14 @@ reset_usb_devices() {
         case "$phase" in
             start)
                 if [ "$reset_on_start" = "true" ]; then
-                    reset_usb_device "$path" "$vendor" "$product"
+                    reset_usb_device start "$path" "$vendor" "$product"
                 else
                     bashio::log.info "USB reset on start disabled for ${path}"
                 fi
                 ;;
             stop)
                 if [ "$reset_on_stop" = "true" ]; then
-                    reset_usb_device "$path" "$vendor" "$product"
+                    reset_usb_device stop "$path" "$vendor" "$product"
                 else
                     bashio::log.info "USB reset on stop disabled for ${path}"
                 fi
@@ -315,24 +374,42 @@ reset_usb_devices() {
     done
 }
 
-wait_for_virtualhere_stop() {
+# Waits up to $1 seconds for VirtualHere to exit; returns 0 once it is gone.
+wait_for_virtualhere_exit() {
+    local limit="$1"
     local waited=0
+
+    while kill -0 "$VH_PID" 2>/dev/null && [ "$waited" -lt "$limit" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    ! kill -0 "$VH_PID" 2>/dev/null
+}
+
+# VirtualHere stops cleanly on SIGINT (its "CTRL-C to stop") and hands its devices back;
+# SIGTERM and SIGKILL are fallbacks.
+stop_virtualhere() {
+    local start="$SECONDS"
 
     if [ -z "$VH_PID" ] || ! kill -0 "$VH_PID" 2>/dev/null; then
         return 0
     fi
 
-    while kill -0 "$VH_PID" 2>/dev/null && [ "$waited" -lt 10 ]; do
-        sleep 1
-        waited=$((waited + 1))
-    done
+    bashio::log.info "Sending INT to VirtualHere"
+    kill -INT "$VH_PID" 2>/dev/null || true
 
-    if kill -0 "$VH_PID" 2>/dev/null; then
-        bashio::log.warning "VirtualHere did not stop within 10 seconds, sending KILL"
-        kill -KILL "$VH_PID" 2>/dev/null || true
+    if ! wait_for_virtualhere_exit 5; then
+        bashio::log.warning "VirtualHere still running after 5 s, sending TERM"
+        kill -TERM "$VH_PID" 2>/dev/null || true
+        if ! wait_for_virtualhere_exit 5; then
+            bashio::log.warning "VirtualHere still running after 10 s, sending KILL"
+            kill -KILL "$VH_PID" 2>/dev/null || true
+        fi
     fi
 
     wait "$VH_PID" 2>/dev/null || true
+    bashio::log.info "VirtualHere stopped after $((SECONDS - start)) s"
 }
 
 shutdown() {
@@ -344,16 +421,14 @@ shutdown() {
 
     bashio::log.info "Stop signal received for VirtualHere USB Server"
 
-    if [ -n "$VH_PID" ] && kill -0 "$VH_PID" 2>/dev/null; then
-        bashio::log.info "Sending TERM to VirtualHere USB Server"
-        kill -TERM "$VH_PID" 2>/dev/null || true
-        wait_for_virtualhere_stop
-    fi
+    local start="$SECONDS"
 
-    bashio::log.info "Running USB reset actions after VirtualHere stopped"
+    stop_virtualhere
+
+    bashio::log.info "Running USB actions after VirtualHere stopped"
     reset_usb_devices stop
 
-    bashio::log.info "VirtualHere USB Server stopped"
+    bashio::log.info "VirtualHere USB Server stopped; shutdown took $((SECONDS - start)) s"
     exit 0
 }
 

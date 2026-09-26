@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0
+
+- Fixed: on stop, the device now really goes back to its kernel drivers. VirtualHere
+  detaches them; the helper reattaches each interface with `USBDEVFS_CONNECT` inside
+  `USBDEVFS_IOCTL` (the usbfs equivalent of a sysfs `bind`, which an add-on cannot write).
+  Before, `USBDEVFS_DISCONNECT`/`CONNECT` were called directly on the device, which the
+  kernel rejects, so a HID device such as the Jablotron JA-100 was left with no `hidraw`
+  node. A reset now runs only if an interface is still without a driver.
+- The device is found by `vendor` and `product`; `path` is optional and only a hint.
+- Defaults: `reset_on_stop: true`, `powercycle_on_stop: false` (port power switching is
+  rarely available, and never on a virtual machine's USB controller), no `path`.
+- `usb-reset` takes `--connect` (attach drivers only) or `--reset` (reset, then attach).
+- VirtualHere is stopped with SIGINT (its CTRL-C), which lets it hand its devices back;
+  SIGTERM after 5 s and SIGKILL after 10 s are fallbacks. Before, it got SIGTERM and was
+  usually killed after 10 s.
+- Shorter stop: s6 grace periods 25 s for services and 3 s for leftover processes (were
+  60 s each, which could run into Home Assistant's own stop timeout); app timeout 40 s.
+- The log states how long stopping VirtualHere and the whole shutdown took.
+
 ## 0.3.7
 
 - Improved the bundled `usb-reset` helper to try a stronger USB cleanup sequence: `USBDEVFS_DISCONNECT`, `USBDEVFS_RESET`, then `USBDEVFS_CONNECT`.

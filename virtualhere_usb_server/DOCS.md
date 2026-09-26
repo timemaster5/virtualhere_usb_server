@@ -14,46 +14,35 @@
 - `config.ini` is stored in `/addon_configs/<slug>/config.ini` via the `addon_config` map.
 - VirtualHere licensing limits depend on the vendor's license terms.
 
-### Reset and power cycle USB devices when VirtualHere starts or stops
+### Give USB devices back to Home Assistant when VirtualHere stops
 
-You can configure the add-on to reset one or more USB devices before VirtualHere starts and/or after VirtualHere stops.
+While VirtualHere runs it detaches the kernel drivers from the devices it serves, so an
+integration that uses the device directly (for example Jablotron 100 through `hidraw`)
+cannot reach it. On stop, for each entry in `usb_reset_devices` with `reset_on_stop: true`,
+the app:
 
-This is useful when a USB device remains locked, unavailable, or does not cleanly return to the system after VirtualHere exits.
+1. stops VirtualHere (INT, its CTRL-C; TERM after 5 s and KILL after 10 s as fallbacks),
+2. reattaches the kernel drivers to every interface of the device (`usb-reset --connect`,
+   the usbfs equivalent of a sysfs `bind`; the app sees `/sys` read-only),
+3. resets the device only if an interface is still without a driver, then reattaches again.
 
-The reset implementation reads the configured sysfs USB device path, resolves its current `/dev/bus/usb/BBB/DDD` node from `busnum` and `devnum`, then performs the Linux `USBDEVFS_RESET` ioctl using the bundled `/usr/local/bin/usb-reset` helper.
-
-On add-on stop, each device can also power cycle its parent hub port using bundled `uhubctl`. The add-on derives the parent hub and port from the configured sysfs path. For example, `1-1.2` becomes hub `1-1`, port `2`. Port power cycling only works when the parent USB hub supports per-port power switching.
+Integrations that opened the device before must reconnect; reload the integration if it
+does not do so by itself.
 
 ```yaml
 options:
-  config_ini: ""
   usb_reset_devices:
-    - path: "1-1.2"
-      vendor: "16d6"
+    - vendor: "16d6"        # Jablotron JA-100 Flexi, as shown by lsusb (16d6:0008)
       product: "0008"
-      reset_on_start: false
       reset_on_stop: true
-      powercycle_on_stop: true
-      powercycle_delay: 5
-
-    - path: "1-1.3"
-      vendor: "1a86"
-      product: "55d4"
-      reset_on_start: true
-      reset_on_stop: false
-      powercycle_on_stop: false
-      powercycle_delay: 5
 ```
 
-The default reset entry targets the Jablotron JA-100 Flexi USB device shown by `lsusb` as `16d6:0008`. The `path` value is the Linux USB sysfs path under `/sys/bus/usb/devices/`, not the `lsusb` bus/device number. For example, `path: "1-1.2"` means `/sys/bus/usb/devices/1-1.2`.
+The device is found by `vendor` and `product`. `path` (the sysfs name under
+`/sys/bus/usb/devices/`, for example `1-1` or `1-1.2`) is optional: it is used when it
+exists and matches, and is needed only when two identical devices are connected.
 
-To confirm or adjust the path, open a host shell and inspect the USB tree:
+`reset_on_start: true` resets the device before VirtualHere starts.
 
-```sh
-lsusb
-find /sys/bus/usb/devices -maxdepth 2 -name idVendor -exec sh -c 'for f do d=${f%/*}; printf "%s " "${d##*/}"; cat "$d/idVendor" "$d/idProduct" 2>/dev/null | paste -sd: -; done' sh {} +
-```
-
-If a configured vendor or product does not match the live device, the add-on logs a warning and skips that reset or power-cycle entry.
-
-To check whether port power control is available for the parent hub, start the add-on and inspect the logs from `uhubctl`. Some hubs report switching support but do not physically remove VBUS power from the port; in that case the USB reset still runs, but the power cycle may not recover a deeply wedged device.
+`powercycle_on_stop: true` additionally power-cycles the device's hub port with the bundled
+`uhubctl`. It needs a hub with per-port power switching and a device behind a hub (a path
+with a dot, such as `1-1.2`); a virtual machine's USB controller has none. Off by default.

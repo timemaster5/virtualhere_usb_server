@@ -7,6 +7,19 @@
 #include <unistd.h>
 #include <linux/usbdevice_fs.h>
 
+/*
+ * usb-reset [--connect|--reset] /dev/bus/usb/BBB/DDD|BBB/DDD
+ *
+ * --connect  attach kernel drivers to every interface that has none
+ * --reset    USBDEVFS_RESET, then --connect (the default)
+ *
+ * USBDEVFS_CONNECT is only accepted inside USBDEVFS_IOCTL, per interface; it is the
+ * usbfs equivalent of writing the interface to /sys/bus/usb/drivers/<driver>/bind,
+ * which an add-on cannot do because it sees /sys read-only.
+ */
+
+#define MAX_INTERFACES 32
+
 static int build_device_path(const char *input, char *output, size_t output_size) {
     const char *prefix = "/dev/bus/usb/";
     int bus = -1;
@@ -21,12 +34,7 @@ static int build_device_path(const char *input, char *output, size_t output_size
         return 0;
     }
 
-    if (sscanf(input, "%d/%d%c", &bus, &dev, &extra) != 2) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (bus < 0 || bus > 999 || dev < 0 || dev > 999) {
+    if (sscanf(input, "%d/%d%c", &bus, &dev, &extra) != 2 || bus < 0 || bus > 999 || dev < 0 || dev > 999) {
         errno = EINVAL;
         return -1;
     }
@@ -39,27 +47,54 @@ static int build_device_path(const char *input, char *output, size_t output_size
     return 0;
 }
 
-static int warn_ioctl_failure(const char *name, const char *device_path) {
-    int saved_errno = errno;
-    fprintf(stderr, "%s %s failed: %s\n", name, device_path, strerror(saved_errno));
-    errno = saved_errno;
-    return -1;
+/* Returns the number of interfaces found, or -1 if the first one could not be reached. */
+static int connect_interfaces(int fd, const char *device_path) {
+    int found = 0;
+
+    for (int ifno = 0; ifno < MAX_INTERFACES; ifno++) {
+        struct usbdevfs_ioctl command = {.ifno = ifno, .ioctl_code = USBDEVFS_CONNECT, .data = NULL};
+
+        if (ioctl(fd, USBDEVFS_IOCTL, &command) < 0) {
+            if (errno == EINVAL) {
+                continue; /* no interface with this number in the active configuration */
+            }
+            fprintf(stderr, "USBDEVFS_CONNECT %s interface %d failed: %s\n", device_path, ifno, strerror(errno));
+            continue;
+        }
+
+        found++;
+        printf("Kernel drivers attached to %s interface %d\n", device_path, ifno);
+    }
+
+    if (found == 0) {
+        fprintf(stderr, "No interface of %s accepted USBDEVFS_CONNECT\n", device_path);
+        return -1;
+    }
+
+    return found;
 }
 
 int main(int argc, char **argv) {
     char device_path[128];
+    const char *target;
+    int reset = 1;
     int fd;
-    int disconnected = 0;
-    int reset_failed = 0;
-    int connect_failed = 0;
+    int status = 0;
 
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s /dev/bus/usb/BBB/DDD|BBB/DDD\n", argv[0]);
+    if (argc == 3 && strcmp(argv[1], "--connect") == 0) {
+        reset = 0;
+        target = argv[2];
+    } else if (argc == 3 && strcmp(argv[1], "--reset") == 0) {
+        target = argv[2];
+    } else if (argc == 2) {
+        target = argv[1];
+    } else {
+        fprintf(stderr, "Usage: %s [--connect|--reset] /dev/bus/usb/BBB/DDD|BBB/DDD\n", argv[0]);
         return 2;
     }
 
-    if (build_device_path(argv[1], device_path, sizeof(device_path)) != 0) {
-        fprintf(stderr, "Invalid USB device '%s': %s\n", argv[1], strerror(errno));
+    if (build_device_path(target, device_path, sizeof(device_path)) != 0) {
+        fprintf(stderr, "Invalid USB device '%s': %s\n", target, strerror(errno));
         return 2;
     }
 
@@ -69,41 +104,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (ioctl(fd, USBDEVFS_DISCONNECT, 0) == 0) {
-        disconnected = 1;
-        printf("Disconnected %s from kernel drivers\n", device_path);
-        sleep(1);
-    } else {
-        warn_ioctl_failure("USBDEVFS_DISCONNECT", device_path);
-        fprintf(stderr, "Continuing with USBDEVFS_RESET fallback for %s\n", device_path);
-    }
-
-    if (ioctl(fd, USBDEVFS_RESET, 0) < 0) {
-        warn_ioctl_failure("USBDEVFS_RESET", device_path);
-        reset_failed = 1;
-    } else {
-        printf("Reset %s OK\n", device_path);
-        sleep(1);
-    }
-
-    if (disconnected) {
-        if (ioctl(fd, USBDEVFS_CONNECT, 0) < 0) {
-            warn_ioctl_failure("USBDEVFS_CONNECT", device_path);
-            connect_failed = 1;
+    if (reset) {
+        if (ioctl(fd, USBDEVFS_RESET, 0) < 0) {
+            fprintf(stderr, "USBDEVFS_RESET %s failed: %s\n", device_path, strerror(errno));
+            status = 1;
         } else {
-            printf("Reconnected %s to kernel drivers\n", device_path);
+            printf("Reset %s OK\n", device_path);
+            sleep(1);
         }
     }
 
+    if (connect_interfaces(fd, device_path) < 0) {
+        status = 1;
+    }
+
     close(fd);
-
-    if (reset_failed || connect_failed) {
-        return 1;
-    }
-
-    if (disconnected) {
-        printf("Disconnect/reset/connect completed for %s\n", device_path);
-    }
-
-    return 0;
+    return status;
 }
