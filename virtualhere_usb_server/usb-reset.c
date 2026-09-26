@@ -10,7 +10,7 @@
 /*
  * usb-reset [--connect|--reset] /dev/bus/usb/BBB/DDD|BBB/DDD
  *
- * --connect  attach kernel drivers to every interface that has none
+ * --connect  attach kernel drivers to every interface that has none (EBUSY: already bound)
  * --reset    USBDEVFS_RESET, then --connect (the default)
  *
  * USBDEVFS_CONNECT is only accepted inside USBDEVFS_IOCTL, per interface; it is the
@@ -58,6 +58,11 @@ static int connect_interfaces(int fd, const char *device_path) {
             if (errno == EINVAL) {
                 continue; /* no interface with this number in the active configuration */
             }
+            if (errno == EBUSY) {
+                found++; /* a driver is already bound: nothing to do */
+                printf("%s interface %d already has a driver\n", device_path, ifno);
+                continue;
+            }
             fprintf(stderr, "USBDEVFS_CONNECT %s interface %d failed: %s\n", device_path, ifno, strerror(errno));
             continue;
         }
@@ -67,7 +72,8 @@ static int connect_interfaces(int fd, const char *device_path) {
     }
 
     if (found == 0) {
-        fprintf(stderr, "No interface of %s accepted USBDEVFS_CONNECT\n", device_path);
+        /* The caller checks /sys for interfaces still without a driver; this is only a hint. */
+        fprintf(stderr, "No interface of %s took a driver through USBDEVFS_CONNECT\n", device_path);
         return -1;
     }
 

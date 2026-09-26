@@ -330,6 +330,7 @@ reset_usb_devices() {
     local reset_on_stop
     local powercycle_on_stop
     local powercycle_delay
+    local label
 
     count="$(bashio::config 'usb_reset_devices | length' 2>/dev/null || echo 0)"
 
@@ -348,26 +349,27 @@ reset_usb_devices() {
         reset_on_stop="$(config_bool "usb_reset_devices[${index}].reset_on_stop")"
         powercycle_on_stop="$(config_bool "usb_reset_devices[${index}].powercycle_on_stop")"
         powercycle_delay="$(config_value "usb_reset_devices[${index}].powercycle_delay")"
+        label="${path:-${vendor}:${product}}"
 
         case "$phase" in
             start)
                 if [ "$reset_on_start" = "true" ]; then
                     reset_usb_device start "$path" "$vendor" "$product"
                 else
-                    bashio::log.info "USB reset on start disabled for ${path}"
+                    bashio::log.info "USB reset on start disabled for ${label}"
                 fi
                 ;;
             stop)
                 if [ "$reset_on_stop" = "true" ]; then
                     reset_usb_device stop "$path" "$vendor" "$product"
                 else
-                    bashio::log.info "USB reset on stop disabled for ${path}"
+                    bashio::log.info "USB reset on stop disabled for ${label}"
                 fi
 
                 if [ "$powercycle_on_stop" = "true" ]; then
                     powercycle_usb_port "$path" "$vendor" "$product" "$powercycle_delay"
                 else
-                    bashio::log.info "USB port power cycle on stop disabled for ${path}"
+                    bashio::log.info "USB port power cycle on stop disabled for ${label}"
                 fi
                 ;;
         esac
@@ -387,8 +389,8 @@ wait_for_virtualhere_exit() {
     ! kill -0 "$VH_PID" 2>/dev/null
 }
 
-# VirtualHere stops cleanly on SIGINT (its "CTRL-C to stop") and hands its devices back;
-# SIGTERM and SIGKILL are fallbacks.
+# VirtualHere stops on SIGTERM within about a second (it ignores SIGINT); SIGKILL is the
+# fallback.
 stop_virtualhere() {
     local start="$SECONDS"
 
@@ -396,16 +398,12 @@ stop_virtualhere() {
         return 0
     fi
 
-    bashio::log.info "Sending INT to VirtualHere"
-    kill -INT "$VH_PID" 2>/dev/null || true
+    bashio::log.info "Sending TERM to VirtualHere"
+    kill -TERM "$VH_PID" 2>/dev/null || true
 
-    if ! wait_for_virtualhere_exit 5; then
-        bashio::log.warning "VirtualHere still running after 5 s, sending TERM"
-        kill -TERM "$VH_PID" 2>/dev/null || true
-        if ! wait_for_virtualhere_exit 5; then
-            bashio::log.warning "VirtualHere still running after 10 s, sending KILL"
-            kill -KILL "$VH_PID" 2>/dev/null || true
-        fi
+    if ! wait_for_virtualhere_exit 10; then
+        bashio::log.warning "VirtualHere still running after 10 s, sending KILL"
+        kill -KILL "$VH_PID" 2>/dev/null || true
     fi
 
     wait "$VH_PID" 2>/dev/null || true

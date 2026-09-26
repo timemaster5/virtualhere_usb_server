@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1
+
+- VirtualHere is stopped with SIGTERM again: it ignores SIGINT, which only added 5 s.
+  SIGKILL after 10 s stays as the fallback.
+- `USBDEVFS_CONNECT` answering `EBUSY` counts as "driver already bound"; whether the
+  device is back is decided by the script's check of `/sys` afterwards, as before.
+- Log lines name the device by `vendor:product` when no `path` is set.
+- Tested with a client using a Jablotron JA-100 while the app stops: VirtualHere stopped in
+  about 1 s, the HID interface got its driver back, and the Jablotron 100 integration
+  reconnected by itself within 30 s.
+
 ## 0.4.0
 
 - Fixed: on stop, the device now really goes back to its kernel drivers. VirtualHere

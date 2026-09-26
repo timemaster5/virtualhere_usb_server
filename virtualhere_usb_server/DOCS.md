@@ -21,13 +21,13 @@ integration that uses the device directly (for example Jablotron 100 through `hi
 cannot reach it. On stop, for each entry in `usb_reset_devices` with `reset_on_stop: true`,
 the app:
 
-1. stops VirtualHere (INT, its CTRL-C; TERM after 5 s and KILL after 10 s as fallbacks),
+1. stops VirtualHere (TERM, then KILL after 10 s),
 2. reattaches the kernel drivers to every interface of the device (`usb-reset --connect`,
    the usbfs equivalent of a sysfs `bind`; the app sees `/sys` read-only),
 3. resets the device only if an interface is still without a driver, then reattaches again.
 
-Integrations that opened the device before must reconnect; reload the integration if it
-does not do so by itself.
+Integrations that had the device open reconnect on their own (Jablotron 100 within about
+30 s); reload an integration that does not.
 
 ```yaml
 options:
